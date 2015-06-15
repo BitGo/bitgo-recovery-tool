@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 var bitgo = require('../src');
 
-var recoverytool= new bitgo.recoverytool();
+var recoverytool= new bitgo.RecoveryTool();
 try {
   recoverytool.run();
 } catch (err) {
