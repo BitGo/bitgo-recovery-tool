@@ -1,0 +1,33 @@
+{
+  "name": "bitgo-recovery-tool",
+  "version": "0.1.0",
+  "description": "The bitgo-recovery-tool is to demonstrate that it is possible to recover Bitcoin stored on the blockchain using BitGo wallets with the wallet KeyCard that is provided upon account creation.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BitGo/offline-recovery-tool.git"
+  },
+  "keywords": [
+    "bitgo",
+    "offline",
+    "recovery",
+    "tool"
+  ],
+  "author": "BitGo",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/BitGo/offline-recovery-tool/issues"
+  },
+  "homepage": "https://github.com/BitGo/offline-recovery-tool#readme",
+  "dependencies": {
+    "bitcoinjs-lib": "1.5.4",
+    "chain-node": "0.0.17",
+    "minimist": "0.2.0",
+    "q": "1.1.2",
+    "readline": "0.0.8",
+    "sjcl": "^1.0.3",
+  }
+}
