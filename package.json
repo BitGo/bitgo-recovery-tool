@@ -1,8 +1,11 @@
 {
   "name": "bitgo-recovery-tool",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "The bitgo-recovery-tool is to demonstrate that it is possible to recover Bitcoin stored on the blockchain using BitGo wallets with the wallet KeyCard that is provided upon account creation.",
-  "main": "index.js",
+  "main": "src/index.js",
+  "bin": {
+    "bitgo-recovery-tool": "bin/bitgo-recovery-tool"
+  },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },

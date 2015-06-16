@@ -39,7 +39,6 @@ var info = '\n' +
 'It will collect the two keys to your wallet, as well as your passcode and\n' +
 'then transfer your bitcoin to the address of your choice.\n\n' +
 'Please enter a blank line by pressing return after each input.\n';
-console.log(info);
 
 //
 // collectInputs
@@ -241,7 +240,7 @@ var findBaseAddress = function() {
 
     return tryNewKeysDeferred.promise;
   }
- 
+
   // First search the new HD wallet type.
   tryNewKeys(0).then(function(address) {
     if (address) {
@@ -440,6 +439,7 @@ var RecoveryTool = function() {
 };
 
 RecoveryTool.prototype.run = function() {
+  console.log(info);
   collectInputs()
     .then(decryptKeys)
     .then(findBaseAddress)
@@ -451,7 +451,7 @@ RecoveryTool.prototype.run = function() {
       console.log(e);
       console.log(e.stack);
     });
-  
+
 };
 
 exports = module.exports = RecoveryTool;

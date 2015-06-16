@@ -1,4 +1,4 @@
 
 module.exports = {
-  RecoveryTool: require('./RecoveryTool'),
+  RecoveryTool: require('./recoveryTool'),
 };
