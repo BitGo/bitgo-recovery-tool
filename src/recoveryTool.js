@@ -8,7 +8,7 @@
 //
 
 var readline = require('readline');
-var HDNode = require('./HDNode.js');
+var HDNode = require('./hdnode.js');
 var Address = require('bitcoinjs-lib/src/address');
 var Script = require('bitcoinjs-lib/src/script');
 var Scripts = require('bitcoinjs-lib/src/scripts');
