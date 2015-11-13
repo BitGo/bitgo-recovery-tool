@@ -19,6 +19,16 @@ If you are trying to recover a live BitGo wallet due to a lost password, please 
 
 ## Instructions
 
+### Mac/Linux
+
+Download a zip of the project from GitHub.com, and extract all of the files. Then open up the Terminal program and change your folder to wherever you extracted the files to
+
+```
+cd /Users/your_username/Downloads/bitgo-recovery-tool-master
+```
+
+Then install the the recovery tool's dependencies.
+
 ```
 npm install
 ```
@@ -30,3 +40,30 @@ cd bin/
 
 ./bitgo-recovery-tool
 ```
+
+### Windows
+
+Download a zip of the project from GitHub.com, and extract all of the files. Then open up the Powershell program. Assuming the path to your nodejs folder containing the node and npm programs is:
+
+```
+C:\Program Files\nodejs
+```
+
+and the path to the bitgo recovery tool's project folder is:
+
+```
+C:\Users\your_username\Documents\GitHub\bitgo-recovery-tool-master\bitgo-recovery-tool-master
+```
+
+then the following commands will start the recovery tool:
+
+```
+cd C:\Users\your_username\Documents\GitHub\bitgo-recovery-tool-master\bitgo-recovery-tool-master
+```
+
+```
+& "C:\Program Files\nodejs\npm" install
+```
+
+```
+& "C:\Program Files\nodejs\node" .\bin\bitgo-recovery\tool
