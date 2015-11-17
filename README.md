@@ -66,4 +66,4 @@ cd C:\Users\your_username\Documents\GitHub\bitgo-recovery-tool-master\bitgo-reco
 ```
 
 ```
-& "C:\Program Files\nodejs\node" .\bin\bitgo-recovery\tool
+& "C:\Program Files\nodejs\node" .\bin\bitgo-recovery-tool
