@@ -1,0 +1,409 @@
+<html>
+<head>
+  <title>Recover your BitGo wallet</title>
+  <script src="/js/bitcoinjs-lib.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/sjcl/1.0.0/sjcl.min.js"></script>
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/2.1.3/jquery.min.js"></script>
+  <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.5/js/bootstrap.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/lodash.js/3.10.1/lodash.min.js"></script>
+  <link href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.5/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+<script>
+  var ADDRESS_LOOKAHEAD = 20;
+  var FEE_PER_KB = 0.0001 * 1e8;
+
+  var network = bitcoin.networks.bitcoin;
+  var BLOCKR_API_BASE_URL = "https://btc.blockr.io/api/v1";
+
+  // Uncomment for testnet
+  // var network = bitcoin.networks.testnet;
+  // var BLOCKR_API_BASE_URL = "https://tbtc.blockr.io/api/v1";
+
+  var keys;
+  var addresses;
+  var unspents;
+  var txSigningRequest;
+  var krsPaymentAddress;
+  var krsPaymentPercentage;
+  var krsMinimumAmount;
+
+  var appendLog = function(text) {
+    $('#console').val($('#console').val() + "\n" + text);
+    $('#console').scrollTop($('#console')[0].scrollHeight - $('#console').height());
+  };
+
+  var deriveKeys = function(keyArray, index) {
+    var results = [];
+    keyArray.forEach(function(k) {
+      results.push(k.derive(index));
+    });
+    return results;
+  };
+
+  var createMultiSigAddress = function(keyArray)  {
+    var publicKeys = [];
+    keyArray.forEach(function(k) {
+      publicKeys.push(k.pubKey);
+    });
+
+    var redeemScript = bitcoin.scripts.multisigOutput(2, publicKeys);
+    var scriptHashScript = bitcoin.scripts.scriptHashOutput(redeemScript.getHash());
+    var address = bitcoin.Address.fromOutputScript(scriptHashScript, network);
+    address.redeemScript = redeemScript;
+    return address;
+  };
+
+  var setKeyCardInputDisableProperties = function(state) {
+    $("#userKey").prop('disabled', state);
+    $("#backupKey").prop('disabled', state);
+    $("#bitgoKey").prop('disabled', state);
+    $("#passphrase").prop('disabled', state);
+    $("#destination").prop('disabled', state);
+    $("#btnStartRecovery").prop('disabled', state);
+  };
+
+  var setRecoveryRequestInputDisableProperties = function(state) {
+    $("#btnSendRecoveryRequest").prop('disabled', state);
+  };
+
+  var formatBTCFromSatoshis = function(satoshis) {
+    return (satoshis * 1e-8).toFixed(4);
+  };
+
+  var startRecovery = function() {
+
+    keys = [];
+    addresses = {};
+    unspents = [];
+    txSigningRequest = {};
+
+    $("#console").animate({ height: "70%" }, 1000);
+    $("html, body").animate({ scrollTop: $(document).height() }, 1000);
+
+    var userKey = $('#userKey').val();
+    var backupXpub = $('#backupXpub').val();
+    var bitgoXpub = $('#bitgoXpub').val();
+    var destinationAddress = $('#destination').val();
+
+    setKeyCardInputDisableProperties(true);
+    $('#console').val('Starting recovery.');
+
+    // Validate the user key
+    try {
+      appendLog("Decrypting Xprv with password: " + $('#passphrase').val());
+      appendLog("and userKey: " + $('#userKey').val());
+      var userHDNode = bitcoin.HDNode.fromBase58(userKey);
+      keys.push(userHDNode);
+      appendLog("Successfully parsed user xprv with xpub: " + userHDNode.neutered().toBase58());
+    } catch (e) {
+      try {
+        userKey = sjcl.decrypt($('#passphrase').val(), $('#userKey').val());
+        userHDNode = bitcoin.HDNode.fromBase58(userKey);
+        keys.push(userHDNode);
+        appendLog("Successfully decrypted and parsed user xprv with xpub: " + userHDNode.neutered().toBase58());
+      } catch (e) {
+        appendLog("Failed to decrypt user key with passphrase - try again!");
+        return setKeyCardInputDisableProperties(false);
+      }
+    }
+
+    // Validate the backup and bitgo xpubs as xpubs
+    try {
+      appendLog("Backup xpub is: " + backupXub);
+      var backupKey = bitcoin.HDNode.fromBase58(backupXpub);
+      appendLog("Derived backup key is: " + backupKey);  
+      keys.push(backupKey);
+      appendLog("Successfully parsed backup xpub: " + backupXpub);
+    } catch (e) {
+      appendLog("Failed to parse backup xpub!");
+      return setKeyCardInputDisableProperties(false);
+    }
+
+    try {
+      var bitgoKey = bitcoin.HDNode.fromBase58(bitgoXpub);
+      keys.push(bitgoKey);
+      appendLog("Successfully parsed bitgo xpub: " + bitgoXpub);
+    } catch (e) {
+      appendLog("Failed to parse bitgo xpub!");
+      return setKeyCardInputDisableProperties(false);
+    }
+    
+    // Validate the destination address
+    try {
+      bitcoin.Address.fromBase58Check(destinationAddress, network);
+    } catch (e) {
+      appendLog("Invalid destination bitcoin address!");
+      return setKeyCardInputDisableProperties(false);
+    }
+
+    // delay 10ms to allow UI to update
+    setTimeout(function() {
+      findUnspents(keys, function() {
+        craftTransaction(destinationAddress, function() {
+          // Check TX by decoding via API:
+          appendLog("Querying blockr.io API to verify tx..");
+          $.ajax({
+            type: "POST",
+            url: BLOCKR_API_BASE_URL + "/tx/decode",
+            cache: false,
+            dataType: "json",
+            data: JSON.stringify({ "hex" : txSigningRequest.transactionHex }),
+            success: function(response) {
+              appendLog("TX as described by blockr.io: ");
+              appendLog(JSON.stringify(response.data, null, '\t'));
+              setRecoveryRequestInputDisableProperties(false);
+              appendLog("Please verify the transaction. If it is acceptable, enter your email, add a message and press Send.");
+            }
+          });
+        });
+      });
+    }, 10);
+  };
+
+  var findUnspents = function(keys, completedUnspentsCallback) {
+    appendLog("Now deriving wallet ID..");
+    appendLog("============================================================");
+    // BitGo's key derivation paths are /0/0/0/i for user-generated addresses and /0/0/1/i for change adddresses.
+    // Derive these top level paths first for performance reasons
+    var keys_0_0 = deriveKeys(deriveKeys(keys, 0), 0);
+    var keys_0_0_0 = deriveKeys(keys_0_0, 0);
+    var keys_0_0_1 = deriveKeys(keys_0_0, 1);
+
+    // We want to get the wallet id, which is the first /0/0/0/0.
+    var walletAddress = createMultiSigAddress(deriveKeys(keys_0_0_0, 0));
+    appendLog("The wallet ID detected was: " + walletAddress.toBase58Check());
+    appendLog("============================================================");
+
+    var queryBlockchainUnspents = function(keyArray, basePath, index, done) {
+      var lookupThisBatch = [];
+      for(var i = index; i < index + ADDRESS_LOOKAHEAD; i++) {
+        // Derive the address
+        var derivedKeys = deriveKeys(keyArray, i);
+        var address = createMultiSigAddress(derivedKeys);
+        var addressBase58 = address.toBase58Check();
+        appendLog("Trying address #" + i + ": " + addressBase58);
+        lookupThisBatch.push(addressBase58);
+
+        address.chainPath = basePath + "/" + i;
+        address.userKey = derivedKeys[0];
+        addresses[addressBase58] = address;
+      }
+
+      var url = BLOCKR_API_BASE_URL + "/address/unspent/" + lookupThisBatch.join(",");
+      // appendLog("URL: " + url);
+
+      // Make async call to blockr.io
+      $.ajax({
+        type: "GET",
+        url: url,
+        cache: false,
+        dataType: "json",
+        success: function(response) {
+          var resultsWithUnspents = _.filter(response.data, function(singleAddressResult) { return singleAddressResult.unspent && singleAddressResult.unspent.length > 0; });
+          _.forEach(resultsWithUnspents, function(singleAddressResult) {
+            _.forEach(singleAddressResult.unspent, function(singleUnspent) {
+              singleUnspent.address = singleAddressResult.address;
+              singleUnspent.amount = Math.round(parseFloat(singleUnspent.amount)*1e8); // perform all handling in satoshis from here onwards
+              unspents.push(singleUnspent);
+              appendLog("Found " + formatBTCFromSatoshis(singleUnspent.amount) + " BTC in " + singleUnspent.address + " (" + singleUnspent.tx + ")");
+            });
+          });
+          // appendLog(JSON.stringify(resultsWithUnspents, null, '\t'));
+
+          // If we found some unspents, then we should continue searching
+          if (resultsWithUnspents.length > 0) {
+            queryBlockchainUnspents(keyArray, basePath, index + ADDRESS_LOOKAHEAD, done);
+          } else {
+            // No more unspents found after the lookahead, so finish up searching in this chain
+            done();
+          }
+        }
+      });
+    };
+
+    appendLog("Getting unspents on chain 0 (user created addresses).. ");
+    queryBlockchainUnspents(keys_0_0_0, "/0/0/0", 0, function() {
+      appendLog("Getting unspents on chain 1 (change).. ");
+      queryBlockchainUnspents(keys_0_0_1, "/0/0/1", 0, completedUnspentsCallback);
+    });
+  };
+
+  var craftTransaction = function(destinationAddress, done) {
+    var totalInputAmount = _.sum(unspents, function(u) { return u.amount; });
+    if (totalInputAmount <= 0) {
+      appendLog("No input to recover - aborting!");
+      return setKeyCardInputDisableProperties(false);
+    }
+    appendLog("Total number of inputs: " + unspents.length + ". ");
+    appendLog("Total amount found in inputs: " + formatBTCFromSatoshis(totalInputAmount) + " BTC. ");
+
+    var approximateSize = new bitcoin.Transaction().toBuffer().length + (232 * unspents.length);
+    var approximateFee = ((Math.floor(approximateSize / 1024)) + 1) * FEE_PER_KB;
+
+    appendLog("Now constructing tx.. ");
+    // Construct a transaction
+    var transactionBuilder = new bitcoin.TransactionBuilder(network);
+    txSigningRequest.inputs = [];
+    _.forEach(unspents, function(unspent) {
+      var address = addresses[unspent.address];
+      transactionBuilder.addInput(unspent.tx, unspent.n, 0xffffffff, bitcoin.Script.fromHex(unspent.script));
+      txSigningRequest.inputs.push({ chainPath: address.chainPath, redeemScript: address.redeemScript.toHex() });
+    });
+
+    var calculatedKRSPaymentAmount = 0;
+    if (krsPaymentAddress && krsPaymentAddress != "") {
+      calculatedKRSPaymentAmount = Math.round(totalInputAmount * krsPaymentPercentage / 100);
+      if (krsMinimumAmount > calculatedKRSPaymentAmount) {
+        if (totalInputAmount < krsMinimumAmount) {
+          appendLog("Not enough inputs to pay the KRS minimum amount - aborting!");
+          return setKeyCardInputDisableProperties(false);
+        }
+        calculatedKRSPaymentAmount = Math.round(krsMinimumAmount);
+      }
+    }
+
+    var usableAmount = totalInputAmount - calculatedKRSPaymentAmount - approximateFee;
+    if (usableAmount < 0) {
+      appendLog("Negative output after fees!");
+      return setKeyCardInputDisableProperties(false);
+    }
+
+    appendLog("Adding destination output: " + formatBTCFromSatoshis(usableAmount) + " BTC to " + destinationAddress + ". ");
+    transactionBuilder.addOutput(destinationAddress, usableAmount);
+
+    if (calculatedKRSPaymentAmount > 0) {
+      appendLog("Adding KRS reward payment: " + formatBTCFromSatoshis(calculatedKRSPaymentAmount) + " BTC to " + krsPaymentAddress + ". ");
+      transactionBuilder.addOutput(krsPaymentAddress, calculatedKRSPaymentAmount);
+    }
+
+    // Sign the inputs
+    appendLog("Signing tx.. ");
+    var i=0;
+    _.forEach(unspents, function(unspent) {
+      var address = addresses[unspent.address];
+      transactionBuilder.sign(i++, address.userKey.privKey, address.redeemScript, bitcoin.Transaction.SIGHASH_ALL);
+    });
+
+    txSigningRequest.transactionHex = transactionBuilder.buildIncomplete().toHex();
+    appendLog("Raw TX: " + txSigningRequest.transactionHex);
+    done();
+  };
+
+  var sendRecoveryRequest = function() {
+    setRecoveryRequestInputDisableProperties(true);
+    txSigningRequest.xpub = $('#boxb').val();
+    txSigningRequest.custom = { "message" : $('#message').val() };
+    appendLog("Sending recovery request to KRS..");
+    $.ajax({
+      type: "POST",
+      cache: false,
+      dataType: "json",
+      contentType: "application/json; charset=utf-8",
+      url: "/recover",
+      data: JSON.stringify(txSigningRequest),
+      success: function(response) {
+        appendLog("Transaction successfully sent to key recovery service. Please check your email for further instructions.");
+      }
+    });
+  }
+</script>
+<div class="jumbotron jumbotron-sm">
+  <div class="container">
+    <div class="row">
+      <div class="col-sm-12 col-lg-12">
+        <h1 class="h1">
+          BitGo Recovery Tool
+        </h1>
+        <h3 class="h3">
+          This page is hosted by ___________
+        </h1>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="container">
+  <form>
+  <div class="row">
+    <div class="col-md-12">
+      <div class="well well-sm">
+          <div class="row">
+            <div class="col-md-12">
+              <div class="form-group">
+                <label for="userKey">
+                  Enter value from Box A: (User Key)</label>
+                <input type="text" class="form-control" id="userKey" placeholder="The user key is an encrypted string or an unencrypted xprv" required="required" />
+              </div>
+              <div class="form-group">
+                <label for="backupKey">
+                  Enter value from Box B: (Backup Key)</label>
+                <input type="text" class="form-control" id="backupKey" required="required" />
+              </div>
+              <div class="form-group">
+                <label for="bitgoKey">
+                  Enter value from Box C: (BitGo Public Key)</label>
+                <input type="text" class="form-control" id="bitgoKey" placeholder="" required="required" />
+              </div>
+              <div class="form-group">
+                <label for="passphrase">
+                  Enter your wallet passcode: </label>
+                <input type="passphrase" class="form-control" id="passphrase" placeholder="" required="required" />
+              </div>
+              <div class="form-group">
+                <label for="destination">
+                  Destination Recovery Address</label>
+                <input type="text" class="form-control" id="destination" placeholder="The bitcoin address to send recovered funds" required="required" />
+              </div>
+            <div class="col-md-12">
+              <button type="button" class="btn btn-primary pull-right" onclick="startRecovery(); return false;" id="btnStartRecovery">
+                Begin Wallet Recovery</button>
+            </div>
+          </div>
+      </div>
+    </div>
+  </div>
+  </form>
+  <div class="row">
+    <div class="col-md-12">
+      <form>
+        <div class="well well-sm">
+          <div class="row">
+            <div class="col-md-12">
+              <div class="form-group">
+                <label for="name">
+                  Message Console</label>
+                  <textarea name="console" id="console" disabled class="form-control" rows="9" cols="25" style="resize:vertical">
+This tool intentionally has no dependencies on the BitGo platform API. It uses an external API (blockr.io) for retrieving blockchain data. This is in order to demonstrate that Bitcoin stored in wallets created through the BitGo service can be recovered independently of BitGo, using only the KeyCard provided when creating a wallet on BitGo along with the wallet password.
+
+If you are trying to recover a live BitGo wallet due to a lost password, please use the online wallet recovery functionality available inside the BitGo interface. Contact support@bitgo.com for assistance.
+                  </textarea>
+              </div>
+            </div>
+            <div class="col-md-12">
+              <div class="row">
+                <div class="col-md-4">
+                  <div class="form-group">
+                    <div class="input-group">
+                      <span class="input-group-addon"><span class="glyphicon glyphicon-envelope"></span></span>
+                    </div>
+                  </div>
+                </div>
+                <div class="col-md-5">
+                  <div class="form-group">
+                    <input type="text" class="form-control" id="message" placeholder="Enter custom message here" />
+                  </div>
+                </div>
+                <div class="col-md-3">
+                  <button type="button" class="btn btn-primary pull-right" onclick="sendRecoveryRequest(); return false;" id="btnSendRecoveryRequest" disabled>Send Recovery Request</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
