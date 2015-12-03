@@ -106,6 +106,7 @@ var collectInputs = function() {
 // be stringified BIP32 extended keys (public or private) or they can be encrypted.
 //
 var decryptKeys = function() {
+  console.log('Starting recovery...');
   var keyToBIP32 = function(key, password, mustBePrivate) {
     try {
        if (key.indexOf('x') !== 0) {
@@ -439,7 +440,6 @@ var RecoveryTool = function() {
 };
 
 RecoveryTool.prototype.run = function() {
-  console.log(info);
   collectInputs()
     .then(decryptKeys)
     .then(findBaseAddress)

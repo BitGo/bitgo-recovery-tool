@@ -62,6 +62,7 @@
   var setKeyCardInputDisableProperties = function(state) {
     $("#boxa").prop('disabled', state);
     $("#boxb").prop('disabled', state);
+    $("#boxc").prop('disabled', state);
     $("#passphrase").prop('disabled', state);
     $("#destinationAddress").prop('disabled', state);
     $("#btnStartRecovery").prop('disabled', state);
@@ -77,11 +78,18 @@
   };
 
   var startRecovery = function() {
+    // reset state variables in case user run multiple times
+    keys = [];
+    addresses = {};
+    unspents = [];
+    txSigningRequest = {};
+
     $("#console").animate({ height: "70%" }, 1000);
     $("html, body").animate({ scrollTop: $(document).height() }, 1000);
 
     var userKey = $('#boxa').val();
     var backupKey = $('#boxb').val();
+    var bitgoXpub = $('#boxc').val().replace(/\s/g, ''); // delete any whitespace
     var destinationAddress = $("#destinationAddress").val();
 
     setKeyCardInputDisableProperties(true);
@@ -110,6 +118,15 @@
       appendLog("Successfully decrypted and parsed backup key with xpub: " + backupHDNode.neutered().toBase58() + '\n');
     } catch (e) {
       appendLog("Failed to decrypt backup key with passcode - try again!");
+      return setKeyCardInputDisableProperties(false);
+    }
+
+    try {
+      var bitgoHDNode = bitcoin.HDNode.fromBase58(bitgoXpub);
+      keys.push(bitgoHDNode);
+      appendLog("Successfully parsed bitgo xpub: " + bitgoXpub);
+    } catch (e) {
+      appendLog("Failed to parse bitgo xpub!");
       return setKeyCardInputDisableProperties(false);
     }
 
@@ -161,7 +178,7 @@
     var keys_0_0 = deriveKeys(deriveKeys(keys, 0), 0);
     var keys_0_0_0 = deriveKeys(keys_0_0, 0);
     var keys_0_0_1 = deriveKeys(keys_0_0, 1);
-
+    
     // We want to get the wallet id, which is the first /0/0/0/0.
     var walletAddress = createMultiSigAddress(deriveKeys(keys_0_0_0, 0));
     appendLog("The wallet ID detected was: " + walletAddress.toBase58Check());
@@ -318,6 +335,11 @@
                 <label for="boxb">
                   Backup Key (Box B on BitGo Keycard)</label>
                 <input type="text" class="form-control" id="boxb" placeholder="This is your backup private key, encrypted with your passcode" required="required" />
+              </div>
+              <div class="form-group">
+                <label for="boxc">
+                  Backup Key (Box C on BitGo Keycard)</label>
+                <input type="text" class="form-control" id="boxc" placeholder="This is the public half of the key BitGo has generated for this wallet" required="required" />
               </div>
               <div class="form-group">
                 <label for="destinationAddress">
