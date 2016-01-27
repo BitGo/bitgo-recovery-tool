@@ -27,10 +27,10 @@
   "homepage": "https://github.com/BitGo/offline-recovery-tool#readme",
   "dependencies": {
     "bitcoinjs-lib": "1.5.4",
-    "chain-node": "0.0.17",
     "minimist": "0.2.0",
     "q": "1.1.2",
     "readline": "0.0.8",
+    "request": "^2.67.0",
     "sjcl": "^1.0.3"
   }
 }

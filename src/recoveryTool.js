@@ -15,21 +15,21 @@ var Scripts = require('bitcoinjs-lib/src/scripts');
 var Transaction = require('bitcoinjs-lib/src/transaction');
 var TransactionBuilder = require('bitcoinjs-lib/src/transaction_builder');
 var networks = require('bitcoinjs-lib/src/networks');
+var request = require('request');
 var util = require('./util.js');
 var Q = require('q');
-
-var chain = require('../node_modules/chain-node/index.js');   // Use chain.com as our alternate blockchain api provider
-chain.apiKeyId = '22f44d29f2501b7eb4fe7143900589cb';
-chain.apiKeySecret = '8c6d187702fa5cf12c63f1f58952e64f';
 
 var inputs = {};       // Inputs collected from the user & command line.
 var userKey;           // The BIP32 xprv for the user key
 var backupKey;         // The BIP32 xprv for the backup key
 var bitgoKey;          // The BIP32 xpub for the bitgo public key
 var subAddresses = {}; // A map of addresses containing funds to recover
-var unspents;          // The unspents from the HD wallet
+var unspents = [];     // The unspents from the HD wallet
+var unspentData = [];  
 var transaction;       // The transaction to send
 
+var logHeader = 'BitGo Recovery Tool: ';
+var errorHeader = 'ERROR: ';
 var info = '\n' +
 '**********************************\n' +
 '**  BitGo Wallet Recovery Tool  **\n' +
@@ -44,11 +44,14 @@ var info = '\n' +
 // collectInputs
 // Function to asynchronously collect inputs for the recovery tool.
 //
+//
 var collectInputs = function() {
+    
   var argv = require('minimist')(process.argv.slice(2));
 
   // Prompt the user for input
   var prompt = function(question) {
+      
     var answer = "";
     var rl = readline.createInterface({
       input: process.stdin,
@@ -76,7 +79,7 @@ var collectInputs = function() {
         return Q.when();
       } else {
         prompt(question).then(function(value) {
-          inputs[variable] = value;
+          inputs[variable] = value.replace(/\s/g, '');
           deferred.resolve();
         });
         return deferred.promise;
@@ -86,7 +89,6 @@ var collectInputs = function() {
 
   if (argv.testnet) {
     bitcoinNetwork = 'testnet';
-    chain.blockChain = 'testnet3';
   }
 
   if (argv.nosend) {
@@ -100,13 +102,14 @@ var collectInputs = function() {
     .then(getVariable("destination", "Enter the bitcoin address to receive the funds: "));
 };
 
+
 //
 // decryptKeys
 // attempts to convert the input keys into BIP32 objects.  The inputs can either
 // be stringified BIP32 extended keys (public or private) or they can be encrypted.
 //
 var decryptKeys = function() {
-  console.log('Starting recovery...');
+  console.log(logHeader + 'Starting recovery...');
   var keyToBIP32 = function(key, password, mustBePrivate) {
     try {
        if (key.indexOf('x') !== 0) {
@@ -114,12 +117,12 @@ var decryptKeys = function() {
        }
        if (mustBePrivate) {
          if (key.indexOf('xprv') !== 0) {
-           throw new Error('must be xprv key');
+           throw new Error(errorHeader + 'must be xprv key');
          }
        }
        return HDNode.fromBase58(key);
     } catch(e) {
-      throw new Error('invalid key: ' + e);
+      throw new Error(errorHeader + 'invalid key: ' + e);
     }
   };
 
@@ -173,13 +176,17 @@ var findBaseAddress = function() {
     }
 
     var baseAddress = Address.fromOutputScript(util.p2shMultisigOutputScript(2, pubKeys), networks.bitcoin).toBase58Check();
-    chain.getAddress(baseAddress, function(err, data) {
+    var getAddressBalanceAPI = 'https://btc.blockr.io/api/v1/address/info/' + baseAddress;
+
+    request({url: getAddressBalanceAPI, method: 'GET'}, function(err, res, body) {
       if (err) {
-        throw new Error("Chain.com error: " + err);
+        throw new Error(errorHeader + 'btc.blockr.io error: ' + err);
       }
+      body = JSON.parse(body);
+
       // The base address may not have any bitcoins in it right now.  Look for
-      // an address that either has a balance or has sent bitcoins.
-      if (data.balance > 0 || data.sent > 0) {
+      // an address that has a balance
+      if (body.data.balance > 0 || body.data.balance_multisig > 0) {
         var result = {
           address: baseAddress,
           keys: [
@@ -252,7 +259,7 @@ var findBaseAddress = function() {
     // Keep searching using the old hd wallet type
     tryOldKeys(INITIAL_BITGO_KEY_TO_TRY, 0).then(function(address) {
       if (address) {
-        throw new Error('could not find address with balance.  (Have your transactions been confirmed yet?)');
+        throw new Error(errorHeader + 'could not find address with balance.  (Have your transactions been confirmed yet?)');
       }
       findBaseAddressDeferred.resolve(address);
     });
@@ -266,7 +273,7 @@ var findBaseAddress = function() {
 //
 var findSubAddresses = function(baseAddress) {
   if (!baseAddress) {
-    console.log('Could not find base address - perhaps the wallet is empty?');
+    console.log(logHeader + 'Could not find base address - perhaps the wallet is empty?');
     process.exit();
   }
   var deferred = Q.defer();
@@ -274,7 +281,7 @@ var findSubAddresses = function(baseAddress) {
   var lookahead = 0;
   var pubKeys;
 
-  console.log("Searching for non-empty HD Wallet sub-addresses...");
+  console.log(logHeader + 'Searching for non-empty HD Wallet sub-addresses...');
 
   function tryAddress(keyIndex, addressIndex) {
     pubKeys = [];
@@ -289,14 +296,20 @@ var findSubAddresses = function(baseAddress) {
     var redeemScript = Scripts.multisigOutput(2, pubKeys);
     var subAddressString = Address.fromOutputScript(util.p2shMultisigOutputScript(2, pubKeys), networks.bitcoin).toBase58Check();
 
-    console.log("Trying keyIndex " + keyIndex + " addressIndex " + addressIndex + ": " + subAddressString + "...");
-    chain.getAddress(subAddressString, function(err, data) {
+    console.log(logHeader + 'Trying keyIndex ' + keyIndex + ' addressIndex ' + addressIndex + ': ' + subAddressString + '...');
+
+    var getAddressBalanceAPI = 'https://btc.blockr.io/api/v1/address/balance/' + subAddressString;        
+    request({url: getAddressBalanceAPI, method: 'GET'}, function(err, res, body) {
+
       if (err) {
-        throw new Error("Chain.com error: " + err);
+        throw new Error(errorHeader + 'blockr.io error: ' + err);
       }
-      if (data.balance > 0) {
+
+      body = JSON.parse(body);
+
+      if (body.data.balance > 0) {
         lookahead = 0;
-        console.log('\tfound: ' + data.balance + ' at ' + subAddressString);
+        console.log(logHeader + '\tFound ' + body.data.balance + ' at ' + subAddressString);
         subAddresses[subAddressString] = {
           address: subAddressString,
           keyIndex: keyIndex,
@@ -336,24 +349,42 @@ var findUnspents = function() {
   var addressList = Object.keys(subAddresses);
 
   if (addressList.length === 0) {
-    throw new Error("could not find any unspents for this address.  Try expanding your search.");
+    throw new Error(errorHeader + 'could not find any unspents for this address.  Try expanding your search.');
   }
+    
+  for (var index in addressList) {
 
-  chain.getAddressesUnspents(addressList, function(err, unspentData) {
-    if (err) {
-      throw new Error("Chain.com error: " + err);
-    }
-    unspents = unspentData;
+    console.log(logHeader + 'Getting unspents for: ' + addressList[index]);
+        
+    var getAddressUnspentsAPI = 'https://btc.blockr.io/api/v1/address/unspent/' + addressList[index] + '?multisigs=1';
+        
+    request({url: getAddressUnspentsAPI, method: 'GET'}, function(err, res, body) {
 
-    // For each unspent, attach the keys and redeemScript for signing
-    for (var index in unspents) {
-      var outputAddress = unspents[index].addresses[0];
-      var subAddress = subAddresses[outputAddress];
-      unspents[index].keys = subAddress.keys;
-      unspents[index].redeemScript = subAddress.redeemScript;
-    }
-    return deferred.resolve();
-  });
+      body = JSON.parse(body); 
+      
+      unspentData = body.data;
+
+      // For each unspent, attach the keys and redeemScript for signing
+      for (var unspentIndex in unspentData.unspent) {
+        var outputAddress = unspentData.address; 
+        var subAddress = subAddresses[outputAddress];
+        var newUnspent = {
+          keys: subAddress.keys,
+          redeemScript: subAddress.redeemScript,
+          transaction_hash: unspentData.unspent[unspentIndex].tx,
+          value: unspentData.unspent[unspentIndex].amount * 1e8,
+          output_index: unspentData.unspent[unspentIndex].n,
+          script_hex: unspentData.unspent[unspentIndex].script
+        };
+        unspents.push(newUnspent);
+
+        if (unspents.length === addressList.length) {
+          console.log(logHeader + 'Unspents ready for transaction builder');
+          deferred.resolve(unspents);
+        }
+      };
+    });
+  };
   return deferred.promise;
 };
 
@@ -378,12 +409,12 @@ var createTransaction = function() {
   var approximateSize = transaction.toBuffer().length + (232 * unspents.length);
   var approximateFee = ((Math.floor(approximateSize / 1024)) + 1) * 0.0001 * 1e8;
   if (approximateFee > totalValue) {
-    throw new Error("Insufficient funds to recover (Have your transactions confirmed yet?)");
+    throw new Error(errorHeader + 'Insufficient funds to recover (Have your transactions confirmed yet?)');
   }
   totalValue -= approximateFee;
 
-  console.log("Recovering: " + totalValue / 1e8 + "BTC");
-  console.log("Fee: " + approximateFee / 1e8 + "BTC");
+  console.log(logHeader + 'Recovering ' + totalValue / 1e8 + 'BTC');
+  console.log(logHeader + 'Fee ' + approximateFee / 1e8 + 'BTC');
 
   // Create the output
   var script = Address.fromBase58Check(inputs.destination).toOutputScript();
@@ -396,17 +427,17 @@ var createTransaction = function() {
     var unspent = unspents[index];
     var redeemScript = Script.fromHex(unspent.redeemScript);
 
-    console.log("Signing input " + (index + 1) + " of " + unspents.length);
+    console.log(logHeader + 'Signing input ' + (index + 1) + ' of ' + unspents.length);
 
     try {
       txb.sign(index, unspent.keys[0].key.privKey, redeemScript);
     } catch (e) {
-      throw new Error('Signature failure for user key: ' + e);
+      throw new Error(errorHeader + 'Signature failure for user key: ' + e);
     }
     try {
       txb.sign(index, unspent.keys[1].key.privKey, redeemScript);
     } catch (e) {
-      throw new Error('Signature failure for backup key: ' + e);
+      throw new Error(errorHeader + 'Signature failure for backup key: ' + e);
     }
   }
 
@@ -421,25 +452,31 @@ var createTransaction = function() {
 var sendTransaction = function() {
   var tx = transaction.toBuffer().toString('hex');
 
-  console.log("Sending transaction: " + tx);
+  console.log(logHeader + 'Sending transaction: ' + tx);
 
   if (!inputs.nosend) {
-    chain.sendTransaction(tx, function(err, resp) {
-      if (err) {
-        throw new Error("Chain.com error: " + err);
+    var sendTxAPI = 'https://btc.blockr.io/api/v1/tx/push';
+
+    request({url: sendTxAPI, method: 'POST', json: { hex: tx } }, function(err, res, body) {
+
+      if (body.status == "error") {
+        throw new Error(errorHeader + 'Blockr.io transaction send error: ' + body + '\n Please email support@bitgo.com for assistance.');
       }
-      console.dir(resp);
-      console.log("sent!");
+      console.log(logHeader + 'Transaction sent, the recovery is complete');
+      console.log(logHeader + 'https://btc.blockr.io/tx/info/' + body.data);
     });
+    
   } else {
-    console.log("[Transaction not sent to network]");
+      console.log(errorHeader + 'Transaction not sent to network');
   }
 };
 
 var RecoveryTool = function() {
+ 
 };
 
 RecoveryTool.prototype.run = function() {
+  console.log(info);
   collectInputs()
     .then(decryptKeys)
     .then(findBaseAddress)
@@ -448,11 +485,11 @@ RecoveryTool.prototype.run = function() {
     .then(createTransaction)
     .then(sendTransaction)
     .catch (function(e) {
-      console.log(e);
-      console.log(e.stack);
+      console.log(errorheader + e);
+      console.log(errorHeader + e.stack);
     });
 
 };
-
+ 
 exports = module.exports = RecoveryTool;
 
