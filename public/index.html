@@ -24,6 +24,9 @@
   var FEE_AMOUNT;
   var RECEIVE_ADDRESS;
 
+  var MAX_SEQUENTIAL_ADDRESSES_WITHOUT_TXS = 20; // used to prevent endless child-key derivations
+
+
   // Uncomment for testnet
   // var network = bitcoin.networks.testnet;
   // var BLOCKR_API_BASE_URL = "https://tbtc.blockr.io/api/v1";
@@ -66,11 +69,6 @@
     $("#passphrase").prop('disabled', state);
     $("#destinationAddress").prop('disabled', state);
     $("#btnStartRecovery").prop('disabled', state);
-  };
-
-  var setRecoveryRequestInputDisableProperties = function(state) {
-    $("#message").prop('disabled', state);
-    $("#btnSendRecoveryRequest").prop('disabled', state);
   };
 
   var formatBTCFromSatoshis = function(satoshis) {
@@ -184,58 +182,97 @@
     appendLog("The wallet ID detected was: " + walletAddress.toBase58Check());
     appendLog("============================================================");
 
-    var queryBlockchainUnspents = function(keyArray, basePath, index, done) {
-      var lookupThisBatch = [];
-      for(var i = index; i < index + ADDRESS_LOOKAHEAD; i++) {
+    var lookupThisBatch = [];
+    var numSequentialAddressesWithoutTxs = 0;
+
+    var queryBlockchainUnspentsPath = function(keyArray, basePath, done) {
+
+      var gatherUnspentAddresses = function(addrIndex, innerDone) {
         // Derive the address
-        var derivedKeys = deriveKeys(keyArray, i);
+        var derivedKeys = deriveKeys(keyArray, addrIndex);
         var address = createMultiSigAddress(derivedKeys);
         var addressBase58 = address.toBase58Check();
-        appendLog("Trying address #" + i + ": " + addressBase58);
-        lookupThisBatch.push(addressBase58);
+        appendLog("Trying address #" + addrIndex + ": " + addressBase58);
 
-        address.chainPath = basePath + "/" + i;
-        address.userKey = derivedKeys[0];
-        address.backupKey = derivedKeys[1];
-        addresses[addressBase58] = address;
-      }
+        // get address info from blockr and check for existence of unspents
+        $.ajax({
+          type: "GET",
+          url: BLOCKR_API_BASE_URL + '/address/info/' + addressBase58,
+          cache: false,
+          dataType: "json",
+          success: function(body) {
 
-      var url = BLOCKR_API_BASE_URL + "/address/unspent/" + lookupThisBatch.join(",");
-      // appendLog("URL: " + url);
+            if (body.data.nb_txs === 0) {
+              //
+              numSequentialAddressesWithoutTxs++;
+            } else {
+              numSequentialAddressesWithoutTxs = 0;
+            }
 
-      // Make async call to blockr.io
-      $.ajax({
-        type: "GET",
-        url: url,
-        cache: false,
-        dataType: "json",
-        success: function(response) {
-          var resultsWithUnspents = _.filter(response.data, function(singleAddressResult) { return singleAddressResult.unspent && singleAddressResult.unspent.length > 0; });
-          _.forEach(resultsWithUnspents, function(singleAddressResult) {
-            _.forEach(singleAddressResult.unspent, function(singleUnspent) {
-              singleUnspent.address = singleAddressResult.address;
-              singleUnspent.amount = Math.round(parseFloat(singleUnspent.amount)*1e8); // perform all handling in satoshis from here onwards
-              unspents.push(singleUnspent);
-              appendLog("Found " + formatBTCFromSatoshis(singleUnspent.amount) + " BTC in " + singleUnspent.address + " (" + singleUnspent.tx + ")");
-            });
-          });
-          // appendLog(JSON.stringify(resultsWithUnspents, null, '\t'));
+            if (body.data.balance > 0) {
+              lookupThisBatch.push(addressBase58);
 
-          // If we found some unspents, then we should continue searching
-          if (resultsWithUnspents.length > 0) {
-            queryBlockchainUnspents(keyArray, basePath, index + ADDRESS_LOOKAHEAD, done);
-          } else {
-            // No more unspents found after the lookahead, so finish up searching in this chain
-            done();
+              address.chainPath = basePath + "/" + addrIndex;
+              address.userKey = derivedKeys[0];
+              address.backupKey = derivedKeys[1];
+              addresses[addressBase58] = address;
+
+            }
+
+            if (numSequentialAddressesWithoutTxs >= MAX_SEQUENTIAL_ADDRESSES_WITHOUT_TXS) {
+              numSequentialAddressesWithoutTxs = 0; // reset this in case this function will be called again
+              // stop searching for addresses with unspents in them
+              innerDone()
+            } else {
+              gatherUnspentAddresses(addrIndex + 1, innerDone);
+            }
           }
+        });
+      };
+
+      gatherUnspentAddresses(0, function() {
+        var unspentAddressList = lookupThisBatch.join(",");
+        if (unspentAddressList.length > 0) {
+          var url = BLOCKR_API_BASE_URL + "/address/unspent/" + lookupThisBatch.join(",");
+
+          // Make async call to blockr.io
+          $.ajax({
+            type: "GET",
+            url: url,
+            cache: false,
+            dataType: "json",
+            success: function(response) {
+              var resultsWithUnspents = [];
+
+              // blockr's api stupidly returns an object rather than an array if the only a single address's unspent is fine, so we have to deal with that here
+              if (!!response.data.address) { // is object
+                resultsWithUnspents = (response.data.unspent && response.data.unspent.length > 0) ? [response.data] : [];
+              } else { // is array
+                resultsWithUnspents = _.filter(response.data, function(singleAddressResult) { return singleAddressResult.unspent && singleAddressResult.unspent.length > 0; });
+              }
+              _.forEach(resultsWithUnspents, function(singleAddressResult) {
+                _.forEach(singleAddressResult.unspent, function(singleUnspent) {
+                  singleUnspent.address = singleAddressResult.address;
+                  singleUnspent.amount = Math.round(parseFloat(singleUnspent.amount)*1e8); // perform all handling in satoshis from here onwards
+                  unspents.push(singleUnspent);
+                  appendLog("Found " + formatBTCFromSatoshis(singleUnspent.amount) + " BTC in " + singleUnspent.address + " (" + singleUnspent.tx + ")");
+                });
+              });
+              lookupThisBatch = []; // reset this in case this function will be called again
+              done();
+            }
+          });
+        } else { // skip making the request if we don't need to
+          lookupThisBatch = []; // reset this in case this function will be called again
+          done()
         }
       });
     };
 
     appendLog("Getting unspents on chain 0 (user created addresses).. ");
-    queryBlockchainUnspents(keys_0_0_0, "/0/0/0", 0, function() {
+    queryBlockchainUnspentsPath(keys_0_0_0, "/0/0/0", function() {
       appendLog("Getting unspents on chain 1 (change).. ");
-      queryBlockchainUnspents(keys_0_0_1, "/0/0/1", 0, completedUnspentsCallback);
+      queryBlockchainUnspentsPath(keys_0_0_1, "/0/0/1", completedUnspentsCallback);
     });
   };
 
