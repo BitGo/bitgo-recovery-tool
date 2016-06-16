@@ -11,8 +11,6 @@
 <body>
 <script>
 
-
-
   var ADDRESS_LOOKAHEAD = 20;
   var FEE_PER_KB = 0.0001 * 1e8;
 
@@ -25,7 +23,6 @@
   var RECEIVE_ADDRESS;
 
   var MAX_SEQUENTIAL_ADDRESSES_WITHOUT_TXS = 20; // used to prevent endless child-key derivations
-
 
   // Uncomment for testnet
   // var network = bitcoin.networks.testnet;
@@ -93,13 +90,20 @@
     setKeyCardInputDisableProperties(true);
     $('#console').val('Starting recovery.');
 
-    if (!$('#passphrase').val()) {
-      appendLog("please enter your wallet password in the 'Wallet passcode' field");
-      return setKeyCardInputDisableProperties(false);
+    userKey = $('#boxa').val();
+    backupKey = $('#boxb').val();
+    if ((userKey && !userKey.startsWith('xprv')) || (backupKey && !backupKey.startsWith('xprv'))) {
+      if (!$('#passphrase').val()) {
+        appendLog("please enter your wallet password in the 'Wallet passcode' field");
+        return setKeyCardInputDisableProperties(false);
+      }
     }
+
     // Validate the user key
     try {
-      userKey = sjcl.decrypt($('#passphrase').val(), $('#boxa').val());
+      if (!userKey.startsWith('xprv')) {
+        userKey = sjcl.decrypt($('#passphrase').val(), userKey);
+      }
       var userHDNode = bitcoin.HDNode.fromBase58(userKey);
       keys.push(userHDNode);
       appendLog("Successfully decrypted and parsed user key with xpub: " + userHDNode.neutered().toBase58() + '\n');
@@ -110,7 +114,9 @@
 
     // Validate the backup key
     try {
-      backupKey = sjcl.decrypt($('#passphrase').val(), $('#boxb').val());
+      if (!backupKey.startsWith('xprv')) {
+        backupKey = sjcl.decrypt($('#passphrase').val(), backupKey);
+      }
       var backupHDNode = bitcoin.HDNode.fromBase58(backupKey);
       keys.push(backupHDNode);
       appendLog("Successfully decrypted and parsed backup key with xpub: " + backupHDNode.neutered().toBase58() + '\n');
@@ -176,7 +182,7 @@
     var keys_0_0 = deriveKeys(deriveKeys(keys, 0), 0);
     var keys_0_0_0 = deriveKeys(keys_0_0, 0);
     var keys_0_0_1 = deriveKeys(keys_0_0, 1);
-    
+
     // We want to get the wallet id, which is the first /0/0/0/0.
     var walletAddress = createMultiSigAddress(deriveKeys(keys_0_0_0, 0));
     appendLog("The wallet ID detected was: " + walletAddress.toBase58Check());
@@ -222,7 +228,7 @@
             if (numSequentialAddressesWithoutTxs >= MAX_SEQUENTIAL_ADDRESSES_WITHOUT_TXS) {
               numSequentialAddressesWithoutTxs = 0; // reset this in case this function will be called again
               // stop searching for addresses with unspents in them
-              innerDone()
+              innerDone();
             } else {
               gatherUnspentAddresses(addrIndex + 1, innerDone);
             }
@@ -264,7 +270,7 @@
           });
         } else { // skip making the request if we don't need to
           lookupThisBatch = []; // reset this in case this function will be called again
-          done()
+          done();
         }
       });
     };
@@ -313,13 +319,13 @@
     done();
   };
 
-  var sendRecoveryRequest = function() {
+  var sendTransaction = function() {
     // verify user message
     var userMessage = $("#message").val();
     if (userMessage !== "I agree to send " + SEND_AMOUNT + " BTC with a fee of " + FEE_AMOUNT + " BTC to address " + RECEIVE_ADDRESS) {
       appendLog("incorrect acknowledgement message! Type the correct message, BTC amounts and receive address to continue with recovery\n");
     } else {
-      appendLog("Sending recovery request to Blockr.io...\n");
+      appendLog("Sending transaction to Blockr.io...\n");
       $.ajax({
         type: "POST",
         cache: false,
@@ -330,10 +336,14 @@
           appendLog("Transaction sent! Once the transaction is confirmed (usually 10 minutes) check " + RECEIVE_ADDRESS + " to make sure your coin arrived");
           appendLog("Thank you for using BitGo's recovery tool!\n");
           appendLog("Transaction ID: " + JSON.stringify(response.data));
+        },
+        error: function(xhr, status, error) {
+          var errMessage = JSON.parse(xhr.responseText).data;
+          appendLog("Error sending transaction: " + errMessage);
         }
       });
     }
-  }
+  };
 
 </script>
 <div class="jumbotron jumbotron-sm">
@@ -361,22 +371,22 @@
               <div class="form-group">
                 <label for="passphrase">
                   Wallet passcode</label>
-                <input type="password" class="form-control" id="passphrase" placeholder="The password of the wallet you're recovering" required="required" />
+                <input type="password" class="form-control" id="passphrase" placeholder="The password of the wallet you're recovering (if keys encrypted)" required="required" />
               </div>
               <div class="form-group">
                 <label for="boxa">
                   User Private Key (Box A on BitGo Keycard)</label>
-                <input type="text" class="form-control" id="boxa" placeholder="This is your private key, encrypted with your passcode" required="required" />
+                <input type="text" class="form-control" id="boxa" placeholder="This is your private key, either as a BIP32 xprv or as encrypted JSON" required="required" />
               </div>
               <div class="form-group">
                 <label for="boxb">
                   Backup Key (Box B on BitGo Keycard)</label>
-                <input type="text" class="form-control" id="boxb" placeholder="This is your backup private key, encrypted with your passcode" required="required" />
+                <input type="text" class="form-control" id="boxb" placeholder="This is your backup private key, either as a BIP32 xprv or as encrypted JSON" required="required" />
               </div>
               <div class="form-group">
                 <label for="boxc">
                   Backup Key (Box C on BitGo Keycard)</label>
-                <input type="text" class="form-control" id="boxc" placeholder="This is the public half of the key BitGo has generated for this wallet" required="required" />
+                <input type="text" class="form-control" id="boxc" placeholder="This is the public half of the key BitGo has generated for this wallet (BIP32 xpub)" required="required" />
               </div>
               <div class="form-group">
                 <label for="destinationAddress">
@@ -418,7 +428,7 @@ If you are trying to recover a live BitGo wallet due to a lost password, please 
                     </div>
                   </div>
                   <div class="col-md-3">
-                    <button type="button" class="btn btn-primary pull-right" onclick="sendRecoveryRequest(); return false;" id="btnSendRecoveryRequest">Send Recovery Request</button>
+                    <button type="button" class="btn btn-primary pull-right" onclick="sendTransaction(); return false;" id="btnSendTransaction">Send Transaction</button>
                   </div>
                 </div>
               </div>
