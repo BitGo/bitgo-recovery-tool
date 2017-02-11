@@ -17,7 +17,6 @@
 <script>
 
   var ADDRESS_LOOKAHEAD = 20;
-  var FEE_PER_KB = 0.0001 * 1e8;
 
   var network = bitcoin.networks.bitcoin;
   var BLOCKR_API_BASE_URL = "https://btc.blockr.io/api/v1";
@@ -27,7 +26,7 @@
   var FEE_AMOUNT;
   var RECEIVE_ADDRESS;
 
-  var MAX_SEQUENTIAL_ADDRESSES_WITHOUT_TXS = 20; // used to prevent endless child-key derivations
+  var MAX_SEQUENTIAL_ADDRESSES_WITHOUT_TXS = 20; // used to prevent endless child-key derivations and handle skipped (unused) addresses
 
   // Uncomment for testnet
   // var network = bitcoin.networks.testnet;
@@ -71,7 +70,7 @@
           placeholder: 'This is your backup private key, either as a BIP32 xprv or as encrypted JSON'
         },
         'console': {
-          innerHTML: 'This tool intentionally has no dependencies on the BitGo platform API. It uses an external API (blockr.io) for retrieving blockchain data. This is in order to demonstrate that Bitcoin stored in wallets created through the BitGo service can be recovered independently of BitGo, using only the KeyCard provided when creating a wallet on BitGo along with the wallet password.\n\nIf you are trying to recover a live BitGo wallet due to a lost password, please use the online wallet recovery functionality available from the BitGo website. Contact support@bitgo.com for assistance.'
+          innerHTML: 'This tool intentionally has no dependencies on the BitGo platform API. It uses external APIs: blockr.io for retrieving blockchain data and bitcoinfees.21.co to determine the recommended transaction fee rate. This is in order to demonstrate that Bitcoin stored in wallets created through the BitGo service can be recovered independently of BitGo, using only the data provided when the BitGo wallet was created.\n\nIf you are trying to recover a live BitGo wallet due to a lost password, please use the online wallet recovery functionality available from the BitGo website. Contact support@bitgo.com for assistance.'
         }
       },
       ledger: {
@@ -209,16 +208,14 @@
     $("#console").animate({ height: "70%" }, 1000);
     $("html, body").animate({ scrollTop: $(document).height() }, 1000);
 
-    var userKey = $('#boxa').val();
-    var backupKey = $('#boxb').val();
+    var userKey = $('#boxa').val().replace(/\s/g, ''); // delete any whitespace
+    var backupKey = $('#boxb').val().replace(/\s/g, ''); // delete any whitespace
     var bitgoXpub = $('#boxc').val().replace(/\s/g, ''); // delete any whitespace
-    var destinationAddress = $("#destinationAddress").val();
+    var destinationAddress = $("#destinationAddress").val().replace(/\s/g, ''); // delete any whitespace
 
     setKeyCardInputDisableProperties(true);
     $('#console').val('Starting recovery.');
 
-    userKey = $('#boxa').val();
-    backupKey = $('#boxb').val();
     if (!isLedger && ((userKey && !userKey.startsWith('xprv')) || (backupKey && !backupKey.startsWith('xprv')))) {
       if (!$('#passphrase').val()) {
         appendLog("please enter your wallet password in the 'Wallet passcode' field");
@@ -272,7 +269,7 @@
         collectUnspents(keys, function() {
           craftTransaction(destinationAddress, function() {
             // Check TX by decoding via API:
-            appendLog("Querying blockr.io API to verify tx..");
+            appendLog("Querying blockr.io API to verify tx...");
             $.ajax({
               type: "POST",
               url: BLOCKR_API_BASE_URL + "/tx/decode",
@@ -305,7 +302,7 @@
   };
 
   var collectUnspents = function(keys, completedUnspentsCallback) {
-    appendLog("Now deriving wallet ID..");
+    appendLog("Now deriving wallet ID...");
     appendLog("============================================================");
     // BitGo's key derivation paths are /0/0/0/i for user-generated addresses and /0/0/1/i for change adddresses.
     // Derive these top level paths first for performance reasons
@@ -428,9 +425,9 @@
       });
     };
 
-    appendLog("Getting unspents on chain 0 (user created addresses).. ");
+    appendLog("Getting unspents on chain 0 (user created addresses)...");
     queryBlockchainUnspentsPath(keys_0_0_0, "/0/0/0", function() {
-      appendLog("Getting unspents on chain 1 (change).. ");
+      appendLog("Getting unspents on chain 1 (change)... ");
       queryBlockchainUnspentsPath(keys_0_0_1, "/0/0/1", completedUnspentsCallback);
     });
   };
@@ -496,10 +493,26 @@
     appendLog("Total number of inputs: " + unspents.length + ". ");
     appendLog("Total amount found in inputs: " + formatBTCFromSatoshis(totalInputAmount) + " BTC. ");
 
-    var approximateSize = new bitcoin.Transaction().toBuffer().length + (232 * unspents.length);
-    var approximateFee = ((Math.floor(approximateSize / 1024)) + 1) * FEE_PER_KB;
+    var feePerByte = 50; // satoshis per byte of data
+    // try to find a realtime recommended fee rate so that we don't under or overpay
+    $.ajax({
+      type: "GET",
+      url: "https://bitcoinfees.21.co/api/v1/fees/recommended",
+      cache: false,
+      dataType: "json",
+      success: function(response) {
+        if (Number.isInteger(response.hourFee)) {
+          // 21's fee estimates are in satoshis per byte
+          feePerByte = response.hourFee * 1000;
+          appendLog("Determined recommended fee rate is currently " + feePerByte " satoshis per KB");
+        }
+      }
+    });
 
-    appendLog("Now constructing tx.. ");
+    var approximateSize = new bitcoin.Transaction().toBuffer().length + (232 * unspents.length);
+    var approximateFee = approximateSize * feePerByte;
+
+    appendLog("Now constructing tx... ");
     // Construct a transaction
     var transactionBuilder = new bitcoin.TransactionBuilder(network);
     txSigningRequest.inputs = [];
@@ -511,7 +524,7 @@
     transactionBuilder.addOutput(destinationAddress, totalInputAmount - approximateFee);
 
     // Sign the inputs
-    appendLog("Signing tx.. \n");
+    appendLog("Signing tx... \n");
     Q.try(function() {
       if (isLedger) {
         return signLedgerTx(transactionBuilder);
@@ -591,7 +604,7 @@
               </div>
               <div class="form-group">
                 <label for="boxb">
-                  Backup Key (Private keychain corresponding to the public keychain identified in Box B on BitGo Keycard)</label>
+                  Backup Key (Either Box B on BitGo Keycard if it's a backup private key OR the private key corresponding to Box B if it is a public key)</label>
                 <input type="text" class="form-control" id="boxb" required="required" />
               </div>
               <div class="form-group">
