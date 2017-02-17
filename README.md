@@ -13,7 +13,7 @@ A Bitcoin recovery tool for BitGo wallets
 
 The BitGo Offline Recovery Tool provides BitGo customers with a mechanism to retrieve their Bitcoin stored with BitGo wallets without depending on BitGo's co-signing service or any of BitGo's backend services.
 
-This tool intentionally has no dependencies on the BitGo platform API. It uses an external API (Chain) for retrieving blockchain data. This is in order to demonstrate that Bitcoin stored in wallets created through the BitGo service can be recovered independently of BitGo, using only the KeyCard provided when creating a wallet on BitGo along with the wallet password.
+This tool intentionally has no dependencies on the BitGo platform API. It uses an external API (Blockr) for retrieving blockchain data. This is in order to demonstrate that Bitcoin stored in wallets created through the BitGo service can be recovered independently of BitGo, using only the KeyCard provided when creating a wallet on BitGo along with the wallet password.
 
 If you are trying to recover a live BitGo wallet due to a lost password, please use the online wallet recovery functionality available inside the BitGo interface and/or contact support@bitgo.com for assistance.
 
