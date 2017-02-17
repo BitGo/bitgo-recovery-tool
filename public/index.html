@@ -506,7 +506,7 @@
         if (Number.isInteger(response.hourFee)) {
           // 21's fee estimates are in satoshis per byte
           feePerByte = response.hourFee * 1000;
-          appendLog("Determined recommended fee rate is currently " + feePerByte " satoshis per KB");
+          appendLog("Determined recommended fee rate is currently " + feePerByte + " satoshis per KB");
         }
       }
     });
