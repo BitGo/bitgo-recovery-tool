@@ -521,7 +521,8 @@
       return defer.promise;
     })
     .then(function(feePerByte) {
-      var approximateSize = new bitcoin.Transaction().toBuffer().length + (232 * unspents.length);
+      // assume 34 bytes for the single output and 295 bytes for each tx input
+      var approximateSize = new bitcoin.Transaction().toBuffer().length + 34 + (295 * unspents.length);
       var approximateFee = approximateSize * feePerByte;
       appendLog("Estimating transaction size to be " + approximateSize + " bytes, requiring fee of " + approximateFee + " satoshis.");
 
