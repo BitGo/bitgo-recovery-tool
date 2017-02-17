@@ -216,6 +216,8 @@
     setKeyCardInputDisableProperties(true);
     $('#console').val('Starting recovery.');
 
+    userKey = $('#boxa').val();
+    backupKey = $('#boxb').val();
     if (!isLedger && ((userKey && !userKey.startsWith('xprv')) || (backupKey && !backupKey.startsWith('xprv')))) {
       if (!$('#passphrase').val()) {
         appendLog("please enter your wallet password in the 'Wallet passcode' field");
