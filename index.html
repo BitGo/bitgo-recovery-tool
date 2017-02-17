@@ -492,40 +492,52 @@
     }
     appendLog("Total number of inputs: " + unspents.length + ". ");
     appendLog("Total amount found in inputs: " + formatBTCFromSatoshis(totalInputAmount) + " BTC. ");
-
-    var feePerByte = 50; // satoshis per byte of data
-    // try to find a realtime recommended fee rate so that we don't under or overpay
-    $.ajax({
-      type: "GET",
-      url: "https://bitcoinfees.21.co/api/v1/fees/recommended",
-      cache: false,
-      dataType: "json",
-      success: function(response) {
-        if (Number.isInteger(response.hourFee)) {
-          // 21's fee estimates are in satoshis per byte
-          feePerByte = response.hourFee * 1000;
-          appendLog("Determined recommended fee rate is currently " + feePerByte + " satoshis per KB");
-        }
-      }
-    });
-
-    var approximateSize = new bitcoin.Transaction().toBuffer().length + (232 * unspents.length);
-    var approximateFee = approximateSize * feePerByte;
-
-    appendLog("Now constructing tx... ");
-    // Construct a transaction
     var transactionBuilder = new bitcoin.TransactionBuilder(network);
-    txSigningRequest.inputs = [];
-    _.forEach(unspents, function(unspent) {
-      var address = addresses[unspent.address];
-      transactionBuilder.addInput(unspent.tx, unspent.n, 0xffffffff, bitcoin.Script.fromHex(unspent.script));
-      txSigningRequest.inputs.push({ chainPath: address.chainPath, redeemScript: address.redeemScript.toHex() });
-    });
-    transactionBuilder.addOutput(destinationAddress, totalInputAmount - approximateFee);
 
-    // Sign the inputs
-    appendLog("Signing tx... \n");
+    // try to find a realtime recommended fee rate so that we don't under or overpay
     Q.try(function() {
+      var defer = Q.defer();
+      var feePerByte = 100; // satoshis per byte of data
+      $.ajax({
+        type: "GET",
+        url: "https://bitcoinfees.21.co/api/v1/fees/recommended",
+        cache: false,
+        dataType: "json",
+        success: function(response) {
+          if (Number.isInteger(response.hourFee)) {
+            // 21's fee estimates are in satoshis per byte
+            feePerByte = response.hourFee;
+            appendLog("Determined recommended fee rate is currently " + feePerByte + " satoshis per byte");
+          } else {
+            appendLog("Invalid recommended fee rate; using default of " + feePerByte + " satoshis per byte");
+          }
+          defer.resolve(feePerByte);
+        },
+        error: function(XMLHttpRequest, textStatus, errorThrown) {
+          appendLog("Couldn't determine recommended fee rate; using default of " + feePerByte + " satoshis per byte");
+          defer.resolve(feePerByte);
+        }
+      });
+      return defer.promise;
+    })
+    .then(function(feePerByte) {
+      var approximateSize = new bitcoin.Transaction().toBuffer().length + (232 * unspents.length);
+      var approximateFee = approximateSize * feePerByte;
+      appendLog("Estimating transaction size to be " + approximateSize + " bytes, requiring fee of " + approximateFee + " satoshis.");
+
+      appendLog("Now constructing tx... ");
+      // Construct a transaction
+      txSigningRequest.inputs = [];
+      _.forEach(unspents, function(unspent) {
+        var address = addresses[unspent.address];
+        transactionBuilder.addInput(unspent.tx, unspent.n, 0xffffffff, bitcoin.Script.fromHex(unspent.script));
+        txSigningRequest.inputs.push({ chainPath: address.chainPath, redeemScript: address.redeemScript.toHex() });
+      });
+      transactionBuilder.addOutput(destinationAddress, totalInputAmount - approximateFee);
+
+      // Sign the inputs
+      appendLog("Signing tx... \n");
+
       if (isLedger) {
         return signLedgerTx(transactionBuilder);
       } else {
@@ -540,6 +552,8 @@
     .then(function() {
       txSigningRequest.transactionHex = transactionBuilder.build().toBuffer().toString('hex');
       appendLog("Raw TX: " + txSigningRequest.transactionHex + '\n\n\n');
+      appendLog("Actual transaction size is " + transactionBuilder.build().toBuffer().length + " bytes.");
+
       done();
     });
   };
@@ -558,7 +572,7 @@
         url: BLOCKR_API_BASE_URL + "/tx/push",
         data: JSON.stringify({hex: txSigningRequest.transactionHex}),
         success: function(response) {
-          appendLog("Transaction sent! Once the transaction is confirmed (usually 10 minutes) check " + RECEIVE_ADDRESS + " to make sure your coin arrived");
+          appendLog("Transaction sent! Once the transaction is confirmed, check " + RECEIVE_ADDRESS + " to make sure your coin arrived");
           appendLog("Thank you for using BitGo's recovery tool!\n");
           appendLog("Transaction ID: " + JSON.stringify(response.data));
         },
