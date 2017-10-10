@@ -31,12 +31,12 @@
 
   var MAX_SEQUENTIAL_ADDRESSES_WITHOUT_TXS = 20; // used to prevent endless child-key derivations and handle skipped (unused) addresses
 
-//  const network = bitcoin.networks.bitcoin;
-//  const SMARTBIT_API_BASE_URL = "https://api.smartbit.com.au/v1";
+  const network = bitcoin.networks.bitcoin;
+  const SMARTBIT_API_BASE_URL = "https://api.smartbit.com.au/v1";
 
   // Uncomment for testnet
-   const network = bitcoin.networks.testnet;
-   const SMARTBIT_API_BASE_URL = "https://testnet-api.smartbit.com.au/v1";
+//   const network = bitcoin.networks.testnet;
+//   const SMARTBIT_API_BASE_URL = "https://testnet-api.smartbit.com.au/v1";
 
   var keys = [];
   var addresses = {};
