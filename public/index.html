@@ -2,6 +2,7 @@
 <head>
   <title>Recover your BitGo wallet</title>
   <script src="js/bitcoinjs-lib.js"></script>
+  <script src="js/prova-lib.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/sjcl/1.0.0/sjcl.min.js"></script>
   <script src="https://ajax.googleapis.com/ajax/libs/jquery/2.1.3/jquery.min.js"></script>
   <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.5/js/bootstrap.min.js"></script>
@@ -11,26 +12,31 @@
   <script src="js/u2f-api.js"></script>
   <script src="js/ledger-btc.js"></script>
   <script src="https://wzrd.in/standalone/buffer"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.4/lodash.js"></script>
   <link href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.5/css/bootstrap.min.css" rel="stylesheet">
 </head>
 <body>
 <script>
-
-  var ADDRESS_LOOKAHEAD = 20;
-
-  var network = bitcoin.networks.bitcoin;
-  var BLOCKR_API_BASE_URL = "https://btc.blockr.io/api/v1";
 
   // vars to verify user is sending the correct amount to the correct address
   var SEND_AMOUNT;
   var FEE_AMOUNT;
   var RECEIVE_ADDRESS;
 
+  // address derivation path constants
+  const RECEIVE_CHAIN_P2SH = 0;
+  const CHANGE_CHAIN_P2SH = 1;
+  const RECEIVE_CHAIN_SEGWIT = 10;
+  const CHANGE_CHAIN_SEGWIT = 11;
+
   var MAX_SEQUENTIAL_ADDRESSES_WITHOUT_TXS = 20; // used to prevent endless child-key derivations and handle skipped (unused) addresses
 
+  const network = bitcoin.networks.bitcoin;
+  const SMARTBIT_API_BASE_URL = "https://api.smartbit.com.au/v1";
+
   // Uncomment for testnet
-  // var network = bitcoin.networks.testnet;
-  // var BLOCKR_API_BASE_URL = "https://tbtc.blockr.io/api/v1";
+  // const network = bitcoin.networks.testnet;
+  // const SMARTBIT_API_BASE_URL = "https://testnet-api.smartbit.com.au/v1";
 
   var keys = [];
   var addresses = {};
@@ -39,14 +45,14 @@
   var txMap = {};
   var isLedger;
   var dongle;
-  var Buffer;
+
+  var Buffer = buffer.Buffer;
 
   // Render form for passphrase or ledger wallet recovery
   var renderForm = function() {
     isLedger = !!location.hash.match(/#ledger$/);
     if (isLedger) {
       dongle = new LedgerBtc(20);
-      Buffer = buffer.Buffer;
     }
     var formProps = {
       passphrase: {
@@ -70,7 +76,7 @@
           placeholder: 'This is your backup private key, either as a BIP32 xprv or as encrypted JSON'
         },
         'console': {
-          innerHTML: 'This tool intentionally has no dependencies on the BitGo platform API. It uses external APIs: blockr.io for retrieving blockchain data and bitcoinfees.21.co to determine the recommended transaction fee rate. This is in order to demonstrate that Bitcoin stored in wallets created through the BitGo service can be recovered independently of BitGo, using only the data provided when the BitGo wallet was created.\n\nIf you are trying to recover a live BitGo wallet due to a lost password, please use the online wallet recovery functionality available from the BitGo website. Contact support@bitgo.com for assistance.'
+          innerHTML: 'This tool intentionally has no dependencies on the BitGo platform API. It uses external APIs: smartbit.com.au for retrieving blockchain data and bitcoinfees.21.co to determine the recommended transaction fee rate. This is in order to demonstrate that Bitcoin stored in wallets created through the BitGo service can be recovered independently of BitGo, using only the data provided when the BitGo wallet was created.\n\nIf you are trying to recover a live BitGo wallet due to a lost password, please use the online wallet recovery functionality available from the BitGo website. Contact support@bitgo.com for assistance.'
         }
       },
       ledger: {
@@ -94,7 +100,7 @@
           placeholder: 'This is your backup private key (BIP32 xprv)'
         },
         'console': {
-          innerHTML: 'This tool intentionally has no dependencies on the BitGo platform API. It uses an external API (blockr.io) for retrieving blockchain data. This is in order to demonstrate that Bitcoin stored in wallets created through the BitGo service can be recovered independently of BitGo, using only the KeyCard provided when creating a wallet on BitGo along with the Ledger device.\n\nPlease connect your Ledger device and open the Bitcoin app before starting the recovery process.'
+          innerHTML: 'This tool intentionally has no dependencies on the BitGo platform API. It uses an external API (smartbit.com.au) for retrieving blockchain data. This is in order to demonstrate that Bitcoin stored in wallets created through the BitGo service can be recovered independently of BitGo, using only the KeyCard provided when creating a wallet on BitGo along with the Ledger device.\n\nPlease connect your Ledger device and open the Bitcoin app before starting the recovery process.'
         }
       }
     };
@@ -119,25 +125,72 @@
     $('#console').scrollTop($('#console')[0].scrollHeight - $('#console').height());
   };
 
-  var deriveKeys = function(keyArray, index) {
-    var results = [];
-    keyArray.forEach(function(k) {
-      results.push(k.derive(index));
-    });
-    return results;
-  };
+  var generateAddress = function({ segwit, path, hdNodes, threshold }) {
+    const isSegwit = !!segwit;
+    let signatureThreshold = 2;
 
-  var createMultiSigAddress = function(keyArray)  {
-    var publicKeys = [];
-    keyArray.forEach(function(k) {
-      publicKeys.push(k.pubKey);
+    if (_.isInteger(threshold)) {
+      if (signatureThreshold <= 0) {
+        throw new Error('threshold has to be positive');
+      }
+      signatureThreshold = threshold;
+    }
+
+    const pathRegex = new RegExp(`\^/(${RECEIVE_CHAIN_P2SH}|${CHANGE_CHAIN_P2SH}|${RECEIVE_CHAIN_SEGWIT}|${CHANGE_CHAIN_SEGWIT})/\\d+$`);
+    if (!path.match(pathRegex)) {
+      throw new Error('unsupported path: ' + path);
+    }
+
+    let rootKeys;
+    if (Array.isArray(hdNodes)) {
+      rootKeys = hdNodes;
+    }
+
+    const derivedKeys = rootKeys.map(function(hdnode) {
+      let derivationPath = path;
+      if (!derivationPath.startsWith('m')) {
+        // all derivation paths need to start with m, but path may already contain that
+        derivationPath = `m/0/0${derivationPath}`;
+      }
+      return hdnode.hdPath().deriveKey(derivationPath);
     });
 
-    var redeemScript = bitcoin.scripts.multisigOutput(2, publicKeys);
-    var scriptHashScript = bitcoin.scripts.scriptHashOutput(redeemScript.getHash());
-    var address = bitcoin.Address.fromOutputScript(scriptHashScript, network);
-    address.redeemScript = redeemScript;
-    return address;
+    const pathComponents = path.split('/');
+    const normalizedPathComponents = _.map(pathComponents, (component) => {
+      if (component && component.length > 0) {
+        return parseInt(component);
+      }
+    });
+    const pathDetails = _.filter(normalizedPathComponents, _.isInteger);
+
+    const addressDetails = {
+      chainPath: path,
+      path: path,
+      chain: pathDetails[0],
+      index: pathDetails[1]
+    };
+
+    // redeem script normally, witness script for segwit
+    const inputScript = bitcoin.script.multisig.output.encode(signatureThreshold, derivedKeys.map(k => k.getPublicKeyBuffer()));
+    const inputScriptHash = bitcoin.crypto.hash160(inputScript);
+    let outputScript = bitcoin.script.scriptHash.output.encode(inputScriptHash);
+    addressDetails.redeemScript = inputScript.toString('hex');
+
+    if (isSegwit) {
+      const witnessScriptHash = bitcoin.crypto.sha256(inputScript);
+      const redeemScript = bitcoin.script.witnessScriptHash.output.encode(witnessScriptHash);
+      const redeemScriptHash = bitcoin.crypto.hash160(redeemScript);
+      outputScript = bitcoin.script.scriptHash.output.encode(redeemScriptHash);
+      addressDetails.witnessScript = inputScript.toString('hex');
+      addressDetails.redeemScript = redeemScript.toString('hex');
+    }
+
+    addressDetails.outputScript = outputScript.toString('hex');
+    addressDetails.address = bitcoin.address.fromOutputScript(outputScript, network);
+    addressDetails.userKey = derivedKeys[0];
+    addressDetails.backupKey = derivedKeys[1];
+    
+    return addressDetails;
   };
 
   var setKeyCardInputDisableProperties = function(state) {
@@ -150,14 +203,14 @@
   };
 
   var formatBTCFromSatoshis = function(satoshis) {
-    return (satoshis * 1e-8).toFixed(4);
+    return (satoshis * 1e-8).toFixed(8);
   };
 
   var ledgerPath;
 
   var validateLedgerKey = function(userKey) {
     var prefix = '44\'/' + (network === bitcoin.networks.testnet ? 1 : 0) + '\'/';
-    var userHDNode = bitcoin.HDNode.fromBase58(userKey);
+    var userHDNode = prova.HDNode.fromBase58(userKey);
     var index = 0;
     var next = function() {
       if (index > Math.pow(2, 31) - 1) {
@@ -190,7 +243,7 @@
       if (!userKey.startsWith('xprv')) {
         userKey = sjcl.decrypt($('#passphrase').val(), userKey);
       }
-      var userHDNode = bitcoin.HDNode.fromBase58(userKey);
+      var userHDNode = prova.HDNode.fromBase58(userKey);
       appendLog("Successfully decrypted and parsed user key with xpub: " + userHDNode.neutered().toBase58() + '\n');
       return Q(userHDNode);
     } catch (e) {
@@ -212,7 +265,7 @@
     var backupKey = $('#boxb').val().replace(/\s/g, ''); // delete any whitespace
     var bitgoXpub = $('#boxc').val().replace(/\s/g, ''); // delete any whitespace
     var destinationAddress = $("#destinationAddress").val().replace(/\s/g, ''); // delete any whitespace
-
+    
     setKeyCardInputDisableProperties(true);
     $('#console').val('Starting recovery.');
 
@@ -238,7 +291,7 @@
         if (!backupKey.startsWith('xprv')) {
           backupKey = sjcl.decrypt($('#passphrase').val(), backupKey);
         }
-        var backupHDNode = bitcoin.HDNode.fromBase58(backupKey);
+        var backupHDNode = prova.HDNode.fromBase58(backupKey);
         keys.push(backupHDNode);
         appendLog("Successfully decrypted and parsed backup key with xpub: " + backupHDNode.neutered().toBase58() + '\n');
       } catch (e) {
@@ -247,7 +300,7 @@
       }
 
       try {
-        var bitgoHDNode = bitcoin.HDNode.fromBase58(bitgoXpub);
+        var bitgoHDNode = prova.HDNode.fromBase58(bitgoXpub);
         keys.push(bitgoHDNode);
         appendLog("Successfully parsed bitgo xpub: " + bitgoXpub);
       } catch (e) {
@@ -257,7 +310,7 @@
 
       // Validate the destination address
       try {
-        bitcoin.Address.fromBase58Check(destinationAddress, network);
+        bitcoin.address.fromBase58Check(destinationAddress, network);
         appendLog("Successfully parsed destination address: " + destinationAddress + '\n');
       } catch (e) {
         appendLog("Invalid destination bitcoin address!");
@@ -269,24 +322,24 @@
         collectUnspents(keys, function() {
           craftTransaction(destinationAddress, function() {
             // Check TX by decoding via API:
-            appendLog("Querying blockr.io API to verify tx...");
+            appendLog("Querying smartbit.com.au API to verify tx...");
             $.ajax({
               type: "POST",
-              url: BLOCKR_API_BASE_URL + "/tx/decode",
+              url: SMARTBIT_API_BASE_URL + "/blockchain/decodetx",
               cache: false,
               dataType: "json",
               data: JSON.stringify({ "hex" : txSigningRequest.transactionHex }),
               success: function(response) {
-                var stats = response.data.statistics;
-                var blockrReceiveAddress = response.data.tx.vout[0].scriptPubKey.addresses[0];
-                appendLog("TX as described by blockr.io: \n\n");
-                appendLog(JSON.stringify(response.data, null, '\t'));
-                appendLog("Please verify the transaction. If it is acceptable, type the following message in the field below to acknowledge you understand the effects of continuing with recovery.\n\n");
-                appendLog("I agree to send " + stats.vouts_sum + " BTC with a fee of " + stats.fee + " BTC to address " + blockrReceiveAddress + '\n');
+                const total = formatBTCFromSatoshis(_.sumBy(unspents, function(unspent) { return unspent.value_int; }));
+                FEE_AMOUNT = (total - _.sumBy(response.transaction.Vout, function(vout) { return vout.Value; })).toFixed(8);
+                SEND_AMOUNT = (total - parseFloat(FEE_AMOUNT)).toFixed(8);
+                RECEIVE_ADDRESS = response.transaction.Vout[0].ScriptPubKey.Addresses[0];
 
-                SEND_AMOUNT = stats.vouts_sum;
-                FEE_AMOUNT = stats.fee;
-                RECEIVE_ADDRESS = blockrReceiveAddress;
+                appendLog("TX as described by smartbit.com.au: \n\n");
+                appendLog(JSON.stringify(response, null, '\t'));
+                appendLog("Please verify the transaction. If it is acceptable, type the following message in the field below to acknowledge you understand the effects of continuing with recovery.\n\n");
+                appendLog("I agree to send " + SEND_AMOUNT + " BTC with a fee of " + FEE_AMOUNT + " BTC to address " + RECEIVE_ADDRESS + '\n');
+
                 $('#sendSection').show(1000);
               }
             });
@@ -305,56 +358,43 @@
     appendLog("Now deriving wallet ID...");
     appendLog("============================================================");
     // BitGo's key derivation paths are /0/0/0/i for user-generated addresses and /0/0/1/i for change adddresses.
+    // BitGo's key derivation paths are /0/0/10/i for user-generated segwit addresses and /0/0/11/i for segwit adddresses.    
     // Derive these top level paths first for performance reasons
-    var keys_0_0;
-    if (isLedger) {
-      keys_0_0 = [keys[0]].concat(deriveKeys(deriveKeys(keys.slice(1), 0), 0));
-    } else {
-      keys_0_0 = deriveKeys(deriveKeys(keys, 0), 0);
-    }
-    var keys_0_0_0 = deriveKeys(keys_0_0, 0);
-    var keys_0_0_1 = deriveKeys(keys_0_0, 1);
 
     // We want to get the wallet id, which is the first /0/0/0/0.
-    var walletAddress = createMultiSigAddress(deriveKeys(keys_0_0_0, 0));
-    appendLog("The wallet ID detected was: " + walletAddress.toBase58Check());
+    var addressDetails = generateAddress({ hdNodes: keys, segwit: false, path: '/0/0'});
+    appendLog("The wallet ID detected was: " + addressDetails.address);
     appendLog("============================================================");
 
     var lookupThisBatch = [];
     var numSequentialAddressesWithoutTxs = 0;
 
-    var queryBlockchainUnspentsPath = function(keyArray, basePath, done) {
+    var queryBlockchainUnspentsPath = function(keyArray, path, isSegwit, done) {
 
       var gatherUnspentAddresses = function(addrIndex, innerDone) {
-        // Derive the address
-        var derivedKeys = deriveKeys(keyArray, addrIndex);
-        var address = createMultiSigAddress(derivedKeys);
-        var addressBase58 = address.toBase58Check();
+        // Derive the address 
+        var address = generateAddress({ hdNodes: keyArray, segwit: isSegwit, path: '/' + path + '/' + addrIndex});
+        var addressBase58 = address.address;
         appendLog("Trying address #" + addrIndex + ": " + addressBase58);
 
-        // get address info from blockr and check for existence of unspents
+        // get address info from smartbit.com.au and check for existence of unspents
         $.ajax({
           type: "GET",
-          url: BLOCKR_API_BASE_URL + '/address/info/' + addressBase58,
+          url: SMARTBIT_API_BASE_URL + '/blockchain/address/' + addressBase58,
           cache: false,
           dataType: "json",
-          success: function(body) {
-
-            if (body.data.nb_txs === 0) {
-              //
+          success: function(response) {
+            
+            if (response.address.total.transaction_count === 0) {
               numSequentialAddressesWithoutTxs++;
             } else {
               numSequentialAddressesWithoutTxs = 0;
             }
 
-            if (body.data.balance > 0) {
+            if (response.address.total.balance_int > 0) {
               lookupThisBatch.push(addressBase58);
-
-              address.chainPath = basePath + "/" + addrIndex;
-              address.userKey = derivedKeys[0];
-              address.backupKey = derivedKeys[1];
+              address.chainPath = "/" + path + "/" + addrIndex;
               addresses[addressBase58] = address;
-
             }
 
             if (numSequentialAddressesWithoutTxs >= MAX_SEQUENTIAL_ADDRESSES_WITHOUT_TXS) {
@@ -371,48 +411,42 @@
       gatherUnspentAddresses(0, function() {
         var unspentAddressList = lookupThisBatch.join(",");
         if (unspentAddressList.length > 0) {
-          var url = BLOCKR_API_BASE_URL + "/address/unspent/" + lookupThisBatch.join(",");
-
-          // Make async call to blockr.io
+          var url = SMARTBIT_API_BASE_URL + "/blockchain/address/" + lookupThisBatch.join(",") + "/unspent";
+          // Make async call to smartbit.com.au
           $.ajax({
             type: "GET",
             url: url,
             cache: false,
             dataType: "json",
             success: function(response) {
-              var resultsWithUnspents = [];
-
-              // blockr's api stupidly returns an object rather than an array if the only a single address's unspent is fine, so we have to deal with that here
-              if (!!response.data.address) { // is object
-                resultsWithUnspents = (response.data.unspent && response.data.unspent.length > 0) ? [response.data] : [];
-              } else { // is array
-                resultsWithUnspents = _.filter(response.data, function(singleAddressResult) { return singleAddressResult.unspent && singleAddressResult.unspent.length > 0; });
-              }
-              _.forEach(resultsWithUnspents, function(singleAddressResult) {
-                _.forEach(singleAddressResult.unspent, function(singleUnspent) {
-                  var addUnspent = function() {
-                    singleUnspent.address = singleAddressResult.address;
-                    singleUnspent.amount = Math.round(parseFloat(singleUnspent.amount)*1e8); // perform all handling in satoshis from here onwards
-                    unspents.push(singleUnspent);
-                    appendLog("Found " + formatBTCFromSatoshis(singleUnspent.amount) + " BTC in " + singleUnspent.address + " (" + singleUnspent.tx + ")");
-                  };
-                  // if recovering ledger wallet, gather full transactions (needed by ledger device for signing)
-                  if (isLedger && !txMap[singleUnspent.tx]) {
-                    var url = BLOCKR_API_BASE_URL + "/tx/raw/" + singleUnspent.tx;
-                    $.ajax({
-                      type: "GET",
-                      url: url,
-                      cache: false,
-                      dataType: "json",
-                      success: function(response) {
-                        txMap[singleUnspent.tx] = response.data.tx.hex;
-                        addUnspent();
-                      }
-                    });
-                  } else {
-                    addUnspent();
+              
+              _.forEach(response.unspent, function(singleUnspent) {
+                var addUnspent = function() {
+                  if(singleUnspent.addresses.length > 1){
+                    throw new Error("SmartBit API returned more than one address for one unspent: \n" + JSON.stringify(singleUnspent));
                   }
-                });
+                  singleUnspent.address = singleUnspent.addresses[0];
+                  const addressDetails = addresses[singleUnspent.address];
+                  _.extend(singleUnspent, addressDetails);
+                  unspents.push(singleUnspent);
+                  appendLog("Found " + formatBTCFromSatoshis(singleUnspent.value_int) + " BTC in " + singleUnspent.address + " (" + singleUnspent.txid + ")");
+                };
+                // if recovering ledger wallet, gather full transactions (needed by ledger device for signing)
+                if (isLedger && !txMap[singleUnspenttxid]) {
+                  var url = SMARTBIT_API_BASE_URL + "/blockchain/tx/" + singleUnspent.txid + '/hex';
+                  $.ajax({
+                    type: "GET",
+                    url: url,
+                    cache: false,
+                    dataType: "json",
+                    success: function(response) {
+                      txMap[singleUnspent.txid] = response.hex[0].hex;
+                      addUnspent();
+                    }
+                  });
+                } else {
+                  addUnspent();
+                }
               });
               lookupThisBatch = []; // reset this in case this function will be called again
               done();
@@ -425,10 +459,17 @@
       });
     };
 
+    // generating addresses and checking for unspents
     appendLog("Getting unspents on chain 0 (user created addresses)...");
-    queryBlockchainUnspentsPath(keys_0_0_0, "/0/0/0", function() {
+    queryBlockchainUnspentsPath(keys, 0, false, function() {
       appendLog("Getting unspents on chain 1 (change)... ");
-      queryBlockchainUnspentsPath(keys_0_0_1, "/0/0/1", completedUnspentsCallback);
+      queryBlockchainUnspentsPath(keys, 1, false, function() {
+        appendLog("Getting unspents on SegWit chain 10 (change)... ");
+        queryBlockchainUnspentsPath(keys, 10, true, function() {
+          appendLog("Getting unspents on SegWit chain 11 (change)... ");
+          queryBlockchainUnspentsPath(keys, 11, true, completedUnspentsCallback);
+        });
+      });
     });
   };
 
@@ -440,7 +481,7 @@
     // Construct utxo param for each input
     var utxos = unspents.map(function(unspent, i) {
       return [
-        dongle.splitTransaction(txMap[unspent.tx]),
+        dongle.splitTransaction(txMap[unspent.txid]),
         unspent.n,
         addresses[unspent.address].redeemScript.toHex()
       ];
@@ -485,13 +526,15 @@
   };
 
   var craftTransaction = function(destinationAddress, done) {
-    var totalInputAmount = _.sum(unspents, function(u) { return u.amount; });
+    var totalInputAmount = _.sumBy(unspents, function(unspent) { return unspent.value_int; });
     if (totalInputAmount <= 0) {
       appendLog("No input to recover - aborting!");
       return setKeyCardInputDisableProperties(false);
     }
     appendLog("Total number of inputs: " + unspents.length + ". ");
     appendLog("Total amount found in inputs: " + formatBTCFromSatoshis(totalInputAmount) + " BTC. ");
+    var transactionBuilder = new bitcoin.TransactionBuilder(network);
+
     var transactionBuilder = new bitcoin.TransactionBuilder(network);
 
     // try to find a realtime recommended fee rate so that we don't under or overpay
@@ -527,12 +570,14 @@
       appendLog("Estimating transaction size to be " + approximateSize + " bytes, requiring fee of " + approximateFee + " satoshis.");
 
       appendLog("Now constructing tx... ");
+
       // Construct a transaction
       txSigningRequest.inputs = [];
       _.forEach(unspents, function(unspent) {
         var address = addresses[unspent.address];
-        transactionBuilder.addInput(unspent.tx, unspent.n, 0xffffffff, bitcoin.Script.fromHex(unspent.script));
-        txSigningRequest.inputs.push({ chainPath: address.chainPath, redeemScript: address.redeemScript.toHex() });
+
+        transactionBuilder.addInput(unspent.txid, unspent.n, 0xffffffff);
+        txSigningRequest.inputs.push({ chainPath: address.chainPath, redeemScript: address.redeemScript });
       });
       transactionBuilder.addOutput(destinationAddress, totalInputAmount - approximateFee);
 
@@ -542,13 +587,41 @@
       if (isLedger) {
         return signLedgerTx(transactionBuilder);
       } else {
-        var i=0;
-        _.forEach(unspents, function(unspent) {
-          var address = addresses[unspent.address];
-          transactionBuilder.sign(i, address.backupKey.privKey, address.redeemScript, bitcoin.Transaction.SIGHASH_ALL);
-          transactionBuilder.sign(i++, address.userKey.privKey, address.redeemScript, bitcoin.Transaction.SIGHASH_ALL);
-        });
-      }
+        try {
+        
+          var signUnspent = function(index, transactionBuilder, privKey, unspent) {
+            let isSegwitInput = !!unspent.witnessScript;          
+            
+            try {
+              if (isSegwitInput) {
+                const witnessScript = unspent.witnessScript;
+                transactionBuilder.sign(index, privKey, Buffer.from(unspent.redeemScript, 'hex'), bitcoin.Transaction.SIGHASH_ALL, unspent.value_int, Buffer.from(witnessScript, 'hex'));
+              } else {
+                transactionBuilder.sign(index, privKey, Buffer.from(unspent.redeemScript, 'hex'), bitcoin.Transaction.SIGHASH_ALL);
+              }
+            } catch (e) {
+              appendLog("Failed to sign input, an error has occured");
+              appendLog(e);
+              return Q.reject('Failed to sign input #' + index);
+            }
+          }
+
+          var index=0;
+          _.forEach(unspents, function(unspent) {
+            let address = addresses[unspent.address];
+            const backupPrv = address.backupKey;
+            const userPrv = address.userKey;
+            backupPrv.network = network;
+            userPrv.network = network;
+
+            signUnspent(index, transactionBuilder, userPrv, unspent);
+            signUnspent(index, transactionBuilder, backupPrv, unspent);
+            index++;
+          });
+        } catch (e) {
+              console.log(e);
+            }
+        }
     })
     .then(function() {
       txSigningRequest.transactionHex = transactionBuilder.build().toBuffer().toString('hex');
@@ -565,17 +638,17 @@
     if (userMessage !== "I agree to send " + SEND_AMOUNT + " BTC with a fee of " + FEE_AMOUNT + " BTC to address " + RECEIVE_ADDRESS) {
       appendLog("incorrect acknowledgement message! Type the correct message, BTC amounts and receive address to continue with recovery\n");
     } else {
-      appendLog("Sending transaction to Blockr.io...\n");
+      appendLog("Sending transaction to smartbit.com.au ...\n");
       $.ajax({
         type: "POST",
         cache: false,
         dataType: "json",
-        url: BLOCKR_API_BASE_URL + "/tx/push",
+        url: SMARTBIT_API_BASE_URL + "/blockchain/pushtx",
         data: JSON.stringify({hex: txSigningRequest.transactionHex}),
         success: function(response) {
           appendLog("Transaction sent! Once the transaction is confirmed, check " + RECEIVE_ADDRESS + " to make sure your coin arrived");
           appendLog("Thank you for using BitGo's recovery tool!\n");
-          appendLog("Transaction ID: " + JSON.stringify(response.data));
+          appendLog("Transaction ID: " + JSON.stringify(response.txid));
         },
         error: function(xhr, status, error) {
           var errMessage = JSON.parse(xhr.responseText).data;
