@@ -27,7 +27,7 @@
   "homepage": "https://github.com/BitGo/offline-recovery-tool#readme",
   "dependencies": {
     "bitcoinjs-lib": "1.5.4",
-    "minimist": "0.2.0",
+    "minimist": "1.2.2",
     "q": "1.1.2",
     "readline": "0.0.8",
     "request": "^2.67.0",
